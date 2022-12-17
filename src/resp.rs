@@ -25,10 +25,9 @@ fn parse_string(buf: &mut Bytes) -> (Kind, Bytes) {
 
 fn parse_number(buf: &mut Bytes) -> (Kind, Bytes) {
     match parse_string(buf) {
-        (Kind::String(value), mut rest) => (
-            Kind::Number(i64::from_str_radix(&value, 10).unwrap()),
-            Bytes::split_off(&mut rest, 0),
-        ),
+        (Kind::String(value), rest) => {
+            (Kind::Number(i64::from_str_radix(&value, 10).unwrap()), rest)
+        }
         (err @ Kind::Error(_), rest) => (err, rest),
         (value, mut rest) => parsing_error(
             &mut rest,
@@ -48,8 +47,13 @@ fn parse_array(buf: &mut Bytes) -> (Kind, Bytes) {
             let mut elements: Vec<Kind> = vec![];
             for _ in 0..len {
                 let (element, next_rest) = parse_resp(&mut element_rest);
-                element_rest = next_rest;
-                elements.push(element);
+                match element {
+                    Kind::Error(_) => return (element, next_rest),
+                    _ => {
+                        element_rest = next_rest;
+                        elements.push(element);
+                    }
+                }
             }
             (Kind::Array { len, elements }, element_rest)
         }
@@ -133,6 +137,20 @@ mod tests {
                         Kind::String("world".to_string())
                     ]
                 );
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_returns_an_error_on_invalid_length_array() {
+        let mut buffer = Bytes::from("*2\r\n+hello\r\n");
+        match parse_resp(&mut buffer) {
+            (Kind::Error(err), rest) => {
+                assert_eq!(err, "empty buffer");
                 assert_eq!(rest, Bytes::from(""))
             }
             (kind, rest) => {
