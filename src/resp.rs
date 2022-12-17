@@ -10,6 +10,13 @@ pub enum Kind {
 }
 
 pub fn parse(buf: &mut Bytes) -> (Kind, Bytes) {
+    if buf.len() < 1 {
+        return (
+            Kind::Error("empty buffer".to_string()),
+            Bytes::split_off(buf, 0),
+        );
+    }
+
     match Bytes::split_to(buf, 1)[0] {
         b'+' => {
             let string_end = buf.windows(2).position(|window| window == b"\r\n");
@@ -23,16 +30,16 @@ pub fn parse(buf: &mut Bytes) -> (Kind, Bytes) {
                     Kind::Error(
                         "string parsing failed, could not find '\\r\\n' ending".to_string(),
                     ),
-                    Bytes::split_to(buf, 0),
+                    Bytes::split_off(buf, 0),
                 ),
             }
         }
         kind => (
             Kind::Error(format!(
-                "parsing failed, unknown type: '{}'",
+                "parsing failed, unknown kind: '{}'",
                 char::from(kind)
             )),
-            buf.clone(),
+            Bytes::split_off(buf, 0),
         ),
     }
 }
@@ -45,12 +52,12 @@ mod tests {
 
     #[test]
     fn it_parses_a_string() {
-        let mut buffer = Bytes::from("+Test\r\n");
+        let mut buffer = Bytes::from("+Test\r\n+Foo\r\n");
 
         match parse(&mut buffer) {
             (Kind::String(value), rest) => {
                 assert_eq!(value, "Test".to_string());
-                assert_eq!(rest, Bytes::from(""))
+                assert_eq!(rest, Bytes::from("+Foo\r\n"))
             }
             (Kind::Error(err), _) => {
                 panic!("parsing error: {}", err);
@@ -59,5 +66,47 @@ mod tests {
                 panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
             }
         };
+    }
+
+    #[test]
+    fn it_returns_an_error_on_missing_crlf() {
+        let mut buffer = Bytes::from("+Test");
+        match parse(&mut buffer) {
+            (Kind::Error(err), rest) => {
+                assert_eq!(err, "string parsing failed, could not find '\\r\\n' ending");
+                assert_eq!(rest, Bytes::from("Test"))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        }
+    }
+
+    #[test]
+    fn it_returns_an_error_on_empty_input() {
+        let mut buffer = Bytes::from("");
+        match parse(&mut buffer) {
+            (Kind::Error(err), rest) => {
+                assert_eq!(err, "empty buffer");
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        }
+    }
+
+    #[test]
+    fn it_returns_an_error_on_unknown_kind() {
+        let mut buffer = Bytes::from(")Foo\r\n");
+        match parse(&mut buffer) {
+            (Kind::Error(err), rest) => {
+                assert_eq!(err, "parsing failed, unknown kind: ')'");
+                assert_eq!(rest, Bytes::from("Foo\r\n"))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        }
     }
 }
