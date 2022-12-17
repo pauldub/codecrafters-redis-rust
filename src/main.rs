@@ -19,7 +19,7 @@ async fn handle_client(socket: &mut TcpStream) {
 
         println!("read {} bytes", bytes_read);
 
-        match resp::parse(&mut buffer.into()) {
+        match resp::parse_resp(&mut buffer.into()) {
             (value @ resp::Kind::String(_), _) => {
                 println!("read value {:?}", value);
             }
