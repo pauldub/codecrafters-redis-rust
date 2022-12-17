@@ -77,6 +77,7 @@ pub fn parse_resp(buf: &mut Bytes) -> (Kind, Bytes) {
     match Bytes::split_to(buf, 1)[0] {
         b'+' => parse_string(buf),
         b'*' => parse_array(buf),
+        b':' => parse_number(buf),
         kind => parsing_error(
             buf,
             &format!("parsing failed, unknown kind: '{}'", char::from(kind)),
@@ -146,12 +147,86 @@ mod tests {
     }
 
     #[test]
+    fn it_parses_a_number_array() {
+        let mut buffer = Bytes::from("*3\r\n:1\r\n:2\r\n:3\r\n");
+        match parse_resp(&mut buffer) {
+            (Kind::Array { len, elements }, rest) => {
+                assert_eq!(len, 3);
+                assert_eq!(elements.len(), 3);
+                assert_eq!(
+                    elements,
+                    vec![Kind::Number(1), Kind::Number(2), Kind::Number(3),]
+                );
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_parses_a_mixed_array() {
+        let mut buffer = Bytes::from("*2\r\n:1\r\n+hello\r\n");
+        match parse_resp(&mut buffer) {
+            (Kind::Array { len, elements }, rest) => {
+                assert_eq!(len, 2);
+                assert_eq!(elements.len(), 2);
+                assert_eq!(
+                    elements,
+                    vec![Kind::Number(1), Kind::String("hello".to_string())]
+                );
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
     fn it_returns_an_error_on_invalid_length_array() {
         let mut buffer = Bytes::from("*2\r\n+hello\r\n");
         match parse_resp(&mut buffer) {
             (Kind::Error(err), rest) => {
                 assert_eq!(err, "empty buffer");
                 assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_parses_a_number() {
+        let mut buffer = Bytes::from(":1000\r\n");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Number(value), rest) => {
+                assert_eq!(value, 1000);
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (Kind::Error(err), _) => {
+                panic!("parsing error: {}", err);
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_parses_a_negative_number() {
+        let mut buffer = Bytes::from(":-1000\r\n");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Number(value), rest) => {
+                assert_eq!(value, -1000);
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (Kind::Error(err), _) => {
+                panic!("parsing error: {}", err);
             }
             (kind, rest) => {
                 panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
