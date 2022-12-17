@@ -4,7 +4,7 @@ use bytes::Bytes;
 pub enum Kind {
     String(String),
     Number(i64),
-    Bulk { size: i64, data: Vec<u8> },
+    Bulk { size: i64, data: Bytes },
     Error(String),
     Array { len: i64, elements: Vec<Kind> },
 }
@@ -29,22 +29,20 @@ fn parse_number(buf: &mut Bytes) -> (Kind, Bytes) {
             (Kind::Number(i64::from_str_radix(&value, 10).unwrap()), rest)
         }
         (err @ Kind::Error(_), rest) => (err, rest),
-        (value, mut rest) => parsing_error(
-            &mut rest,
-            &format!("number parsing failed, unexpected resp value: {:?}", value),
-        ),
+        _ => unreachable!(),
     }
 }
 
 fn parse_array(buf: &mut Bytes) -> (Kind, Bytes) {
     if buf.len() < 1 {
-        return parsing_error(buf, "array parsing failed, missing 'length'");
+        return parsing_error(buf, "array parsing failed, missing 'len'");
     }
 
     match parse_number(buf) {
         (Kind::Number(len), rest) => {
             let mut element_rest = rest;
             let mut elements: Vec<Kind> = vec![];
+
             for _ in 0..len {
                 let (element, next_rest) = parse_resp(&mut element_rest);
                 match element {
@@ -55,13 +53,40 @@ fn parse_array(buf: &mut Bytes) -> (Kind, Bytes) {
                     }
                 }
             }
+
             (Kind::Array { len, elements }, element_rest)
         }
         (err @ Kind::Error(_), rest) => (err, rest),
-        (value, mut rest) => parsing_error(
-            &mut rest,
-            &format!("number parsing failed, unexpected resp value: {:?}", value),
-        ),
+        _ => unreachable!(),
+    }
+}
+
+fn parse_bulk_string(buf: &mut Bytes) -> (Kind, Bytes) {
+    if buf.len() < 1 {
+        return parsing_error(buf, "bulk string parsing failed, missing 'size'");
+    }
+
+    match parse_number(buf) {
+        (Kind::Number(size), mut rest) => {
+            let buffer_size = rest.len() as i64;
+            if size > buffer_size as i64 - 2 {
+                return parsing_error(&mut rest, &format!("bulk string parsing failed, cannot read {} bytes from buffer of size {} accounting for '\\r\\n' ending", size, buffer_size));
+            }
+
+            let data = Bytes::split_to(&mut rest, size.try_into().unwrap());
+            match find_crlf(&rest) {
+                Some(pos) => (
+                    Kind::Bulk { size, data },
+                    Bytes::split_off(&mut rest, pos + 2),
+                ),
+                None => parsing_error(
+                    &mut rest,
+                    "bulk string failed, could not find '\\r\\n' ending",
+                ),
+            }
+        }
+        (err @ Kind::Error(_), rest) => (err, rest),
+        _ => unreachable!(),
     }
 }
 
@@ -78,6 +103,7 @@ pub fn parse_resp(buf: &mut Bytes) -> (Kind, Bytes) {
         b'+' => parse_string(buf),
         b'*' => parse_array(buf),
         b':' => parse_number(buf),
+        b'$' => parse_bulk_string(buf),
         kind => parsing_error(
             buf,
             &format!("parsing failed, unknown kind: '{}'", char::from(kind)),
@@ -177,6 +203,78 @@ mod tests {
                     vec![Kind::Number(1), Kind::String("hello".to_string())]
                 );
                 assert_eq!(rest, Bytes::from(""))
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_parses_a_bulk_string() {
+        let mut buffer = Bytes::from("$5\r\nhello\r\n");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Bulk { size, data }, rest) => {
+                assert_eq!(size, 5);
+                assert_eq!(data, Bytes::from("hello"));
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (Kind::Error(err), _) => {
+                panic!("parsing error: {}", err);
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_parses_a_bulk_string_ignoring_extra_data() {
+        let mut buffer = Bytes::from("$5\r\nhello world\r\n");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Bulk { size, data }, rest) => {
+                assert_eq!(size, 5);
+                assert_eq!(data, Bytes::from("hello"));
+                assert_eq!(rest, Bytes::from(""))
+            }
+            (Kind::Error(err), _) => {
+                panic!("parsing error: {}", err);
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_returns_an_error_if_reading_a_bulk_string_goes_out_of_bound() {
+        let mut buffer = Bytes::from("$5\r\nh");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Error(err), _) => {
+                assert_eq!(
+                    err,
+                    "bulk string parsing failed, cannot read 5 bytes from buffer of size 1 accounting for '\\r\\n' ending"
+                );
+            }
+            (kind, rest) => {
+                panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
+            }
+        };
+    }
+
+    #[test]
+    fn it_returns_an_error_if_reading_a_bulk_string_goes_out_of_bound_accounting_for_ending() {
+        let mut buffer = Bytes::from("$5\r\nh\r\n");
+
+        match parse_resp(&mut buffer) {
+            (Kind::Error(err), _) => {
+                assert_eq!(
+                    err,
+                    "bulk string parsing failed, cannot read 5 bytes from buffer of size 3 accounting for '\\r\\n' ending"
+                );
             }
             (kind, rest) => {
                 panic!("unexpected kind: {:?} read_bytes: {:?}", kind, rest)
