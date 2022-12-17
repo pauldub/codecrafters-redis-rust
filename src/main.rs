@@ -20,16 +20,74 @@ async fn handle_client(socket: &mut TcpStream) {
         println!("read {} bytes", bytes_read);
 
         match resp::parse_resp(&mut buffer.into()) {
-            (value @ resp::Kind::String(_), _) => {
-                println!("read value {:?}", value);
+            (resp::Kind::Array { len, elements }, _) => {
+                if len < 1 {
+                    println!("empty RESP array received");
+                    continue;
+                }
+
+                println!("element: {:?}", elements);
+
+                match elements.get(0) {
+                    Some(resp::Kind::Bulk {
+                        data: command_data, ..
+                    }) => {
+                        match String::from_utf8(command_data.to_vec())
+                            .expect("failed to parse command as utf-8 string")
+                            .to_uppercase()
+                            .as_str()
+                        {
+                            "PING" => {
+                                println!("sending PONG");
+                                socket.write_all("+PONG\r\n".as_bytes()).await.unwrap();
+                            }
+                            "ECHO" => {
+                                if elements.len() > 2 {
+                                    socket
+                                        .write_all(
+                                            "-wrong number of arguments for command\r\n".as_bytes(),
+                                        )
+                                        .await
+                                        .unwrap();
+
+                                    continue;
+                                }
+                                println!("replying to ECHO");
+                                match elements.get(1) {
+                                    Some(resp::Kind::Bulk {
+                                        data: reply_data, ..
+                                    }) => {
+                                        socket
+                                            .write_all(
+                                                format!("${}\r\n", reply_data.len()).as_bytes(),
+                                            )
+                                            .await
+                                            .unwrap();
+                                        socket.write_all(reply_data).await.unwrap();
+                                        socket.write_all(b"\r\n").await.unwrap();
+                                    }
+                                    Some(value) => {
+                                        println!("unexpected RESP value: {:?}", value)
+                                    }
+                                    None => unreachable!(),
+                                }
+                            }
+                            command => {
+                                println!("unhandled command: {}", command);
+                                socket.write_all("+OK\r\n".as_bytes()).await.unwrap();
+                            }
+                        }
+                    }
+                    Some(value) => {
+                        println!("unexpected RESP value: {:?}", value)
+                    }
+                    None => unreachable!(),
+                }
             }
             (value, _) => {
-                println!("read value {:?}", value)
+                println!("unexpected RESP value: {:?}", value)
             }
         }
-
-        println!("sending PONG");
-        socket.write_all("+PONG\r\n".as_bytes()).await.unwrap();
     }
 }
 
