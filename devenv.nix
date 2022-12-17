@@ -3,7 +3,7 @@
 {
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
-
+  env.RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
   # https://devenv.sh/packages/
   packages = [ pkgs.git pkgs.redis pkgs.cargo-watch ];
 
@@ -15,6 +15,7 @@
   # https://devenv.sh/languages/
   languages.nix.enable = true;
   languages.rust.enable = true;
+  # languages.rust.version = "stable";
 
   # https://devenv.sh/scripts/
   # scripts.hello.exec = "echo hello from $GREET";
