@@ -24,7 +24,7 @@ impl Connection {
             bail!("client closed connection");
         }
 
-        let (value, leftover_data) = resp::parse_resp(&mut buffer.into());
+        let (value, leftover_data) = resp::parse_resp(&mut buffer.into())?;
         if leftover_data.len() > 0 {
             println!(
                 "[warn] {} leftover bytes after reading command",
@@ -42,7 +42,10 @@ impl Connection {
                     bail!("invalid command, array should have at least one element")
                 }
 
-                let raw_command_name = elements.drain(0..1).next().unwrap();
+                let raw_command_name = elements
+                    .drain(0..1)
+                    .next()
+                    .ok_or(anyhow::format_err!("could not get command"))?;
                 let command_name = raw_command_name.as_string()?.to_ascii_uppercase();
                 Ok((command_name, elements))
             }
