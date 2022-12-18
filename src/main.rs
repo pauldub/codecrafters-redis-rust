@@ -1,82 +1,42 @@
-pub mod resp;
+mod connection;
+mod resp;
 
 use std::net;
 
-use bytes::BytesMut;
+use anyhow::Result;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-async fn handle_client(socket: &mut TcpStream) {
+use connection::Connection;
+
+async fn handle_client(socket: TcpStream) -> Result<()> {
     println!("accepted new connection");
+
+    let mut conn = Connection::new(socket);
+
     loop {
-        let mut buffer = BytesMut::with_capacity(32);
-        let bytes_read = socket.read_buf(&mut buffer).await.unwrap();
-        if bytes_read == 0 {
-            println!("client closed connection");
-            break;
-        }
+        let (command, args) = conn.read_command().await?;
+        match command.as_str() {
+            "PING" => {
+                println!("sending PONG");
+                conn.write_all("+PONG\r\n".as_bytes()).await?;
+            }
+            "ECHO" => {
+                if args.len() != 1 {
+                    conn.write_all("-wrong number of arguments for command\r\n".as_bytes())
+                        .await?;
 
-        println!("read {} bytes", bytes_read);
-
-        match resp::parse_resp(&mut buffer.into()) {
-            (resp::Kind::Array { len, elements }, _) => {
-                if len < 1 {
-                    println!("empty RESP array received");
                     continue;
                 }
-
-                println!("element: {:?}", elements);
-
-                match elements.get(0) {
-                    Some(resp::Kind::Bulk {
-                        data: command_data, ..
+                println!("replying to ECHO");
+                match args.get(0) {
+                    Some(resp::Value::Bulk {
+                        data: reply_data, ..
                     }) => {
-                        match String::from_utf8(command_data.to_vec())
-                            .expect("failed to parse command as utf-8 string")
-                            .to_uppercase()
-                            .as_str()
-                        {
-                            "PING" => {
-                                println!("sending PONG");
-                                socket.write_all("+PONG\r\n".as_bytes()).await.unwrap();
-                            }
-                            "ECHO" => {
-                                if elements.len() > 2 {
-                                    socket
-                                        .write_all(
-                                            "-wrong number of arguments for command\r\n".as_bytes(),
-                                        )
-                                        .await
-                                        .unwrap();
-
-                                    continue;
-                                }
-                                println!("replying to ECHO");
-                                match elements.get(1) {
-                                    Some(resp::Kind::Bulk {
-                                        data: reply_data, ..
-                                    }) => {
-                                        socket
-                                            .write_all(
-                                                format!("${}\r\n", reply_data.len()).as_bytes(),
-                                            )
-                                            .await
-                                            .unwrap();
-                                        socket.write_all(reply_data).await.unwrap();
-                                        socket.write_all(b"\r\n").await.unwrap();
-                                    }
-                                    Some(value) => {
-                                        println!("unexpected RESP value: {:?}", value)
-                                    }
-                                    None => unreachable!(),
-                                }
-                            }
-                            command => {
-                                println!("unhandled command: {}", command);
-                                socket.write_all("+OK\r\n".as_bytes()).await.unwrap();
-                            }
-                        }
+                        conn.write_all(format!("${}\r\n", reply_data.len()).as_bytes())
+                            .await?;
+                        conn.write_all(reply_data).await?;
+                        conn.write_all(b"\r\n").await?;
                     }
                     Some(value) => {
                         println!("unexpected RESP value: {:?}", value)
@@ -84,8 +44,9 @@ async fn handle_client(socket: &mut TcpStream) {
                     None => unreachable!(),
                 }
             }
-            (value, _) => {
-                println!("unexpected RESP value: {:?}", value)
+            _unsupported_command => {
+                conn.write_all("-unsupported command\r\n".as_bytes())
+                    .await?;
             }
         }
     }
@@ -99,9 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::from_std(std_listener)?;
 
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let (socket, _) = listener.accept().await?;
 
-        tokio::spawn(async move { handle_client(&mut socket).await });
+        tokio::spawn(async move { handle_client(socket).await.unwrap() });
     }
 }
 
